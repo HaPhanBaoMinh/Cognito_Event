@@ -1,0 +1,185 @@
+Parameters:
+  UserPoolName:
+    Type: String
+    Default: "user-pool"
+
+  TableName:
+    Type: String
+    Default: "user-metadata"
+
+  SQSName:
+    Type: String
+    Default: "cognito-sqs"
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+
+        - Name: name
+          Required: true
+          Mutable: true
+
+        - Name: phone_number
+          Required: true
+          Mutable: true
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      AttributeDefinitions:
+        - AttributeName: "id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "id"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  SaveUserMetadataLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "DynamoDBPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:*"
+                Resource: "*"
+
+  SendSQSMessageLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "SQSPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "sqs:*"
+                Resource: "*"
+
+  SQS:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSName
+
+  SendSQSMessage:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !GetAtt SendSQSMessageLambdaExecutionRole.Arn
+      FunctionName: !Sub "${AWS::StackName}-send"
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import logging
+          import os
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          sqs = boto3.client("sqs")
+          queueUrl  = os.environ["QUEUE_URL"]
+
+          def buildResponse(statusCode, body=None):
+            response = {
+                "statusCode": statusCode,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            }
+
+            if body is not None:
+                response["body"] = json.dumps(body)
+            return response
+
+          def handler(event, context):
+            try:
+              print(event)
+              requestBody = json.loads(event["body"])
+              sqs.send_message(QueueUrl=queueUrl, MessageBody=json.dumps(requestBody))
+              body = {
+                  "Operation": "SEND",
+                  "Message": "SUCCESS",
+              }
+              return buildResponse(200, body)
+            except Exception as e:
+              return str(e)
+              logger.exception("Do your custom error handling here. I am just gonna log it our here!!")
+      Runtime: "python3.8"
+      Environment:
+        Variables:
+          QUEUE_URL: !GetAtt SQS.Arn
+
+  # SaveUserMetadata:
+  # Type: AWS::Lambda::Function
+  # Properties:
+  #   Handler: "index.handler"
+  #   Role: !GetAtt SaveUserMetadataLambdaExecutionRole.Arn
+  #   FunctionName: !Sub "${AWS::StackName}-post"
+  #   Code:
+  #     ZipFile: |
+  #       import boto3
+  #       import json
+  #       import logging
+  #       logger = logging.getLogger()
+  #       logger.setLevel(logging.INFO)
+
+  #       dynamodbTableName = 'user-metadata'
+  #       dynamodb = boto3.resource("dynamodb")
+  #       table = dynamodb.Table(dynamodbTableName)
+
+  #       def buildResponse(statusCode, body=None):
+  #         response = {
+  #             "statusCode": statusCode,
+  #             "headers": {
+  #                 "Content-Type": "application/json",
+  #                 "Access-Control-Allow-Origin": "*"
+  #             }
+  #         }
+
+  #         if body is not None:
+  #             response["body"] = json.dumps(body)
+  #         return response
+
+  #       def handler(event, context):
+  #         try:
+  #           requestBody = json.loads(event["body"])
+  #           table.put_item(Item=requestBody)
+  #           body = {
+  #               "Operation": "SAVE",
+  #               "Message": "SUCCESS",
+  #           }
+  #           return buildResponse(200, body)
+  #         except Exception as e:
+  #           return str(e)
+  #           logger.exception("Do your custom error handling here. I am just gonna log it our here!!")
+  #   Runtime: "python3.8"
